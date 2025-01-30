@@ -1,0 +1,9 @@
+apiVersion: sample.k8s-controller.ad/v1
+kind: MyChildResource
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-controller-simple
+    app.kubernetes.io/managed-by: kustomize
+  name: mychildresource-sample
+spec:
+  # TODO(user): Add fields here

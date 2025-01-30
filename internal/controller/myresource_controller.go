@@ -18,13 +18,14 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"helm.sh/helm/v3/pkg/chartutil"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -33,6 +34,38 @@ import (
 
 	samplev1 "k8s-controller.ad/api/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+)
+
+var (
+	LabelsOrigin = map[string]string{
+		"test-mode": "origin",
+		"counter":   "0",
+		"imOrigin":  "yes",
+	}
+	LabelsModified = map[string]string{
+		"test-mode": "modified",
+		"counter":   "0",
+	}
+
+	SpecOrigin = samplev1.MyChildResourceSpec{
+		Foo: "foo",
+		FooMap: map[string]string{
+			"key1": "value1",
+			"key2": "value1-2",
+		},
+		FooList: []string{"1", "2", "3"},
+	}
+	SpecModified = samplev1.MyChildResourceSpec{
+		Foo: "foo-2",
+		FooMap: map[string]string{
+			"key1": "value1",
+		},
+		FooList: []string{"1", "2"},
+	}
+)
+
+const (
+	AnnotationKey = "manifest_applied"
 )
 
 // MyResourceReconciler reconciles a MyResource object
@@ -58,19 +91,29 @@ func (r *MyResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Reconciling MyResource", "namespace", req.Namespace, "name", req.Name)
 
-	// Call the reconcileConfigMapSSA function
-	if err := r.reconcileConfigMapSSA(ctx); err != nil {
-		errors.Join(err, errors.New("failed to reconcile ConfigMap by SSA"))
+	// Call the reconcileChildResourceSSA function
+	if err := r.reconcileChildResourceSSA(ctx); err != nil {
+		errors.Join(err, errors.New("failed to reconcile child resource by SSA"))
 		return ctrl.Result{}, err
 	}
-	// Call the reconcileConfigMapWithUpdate function
-	if err := r.reconcileConfigMapWithUpdate(ctx); err != nil {
-		errors.Join(err, errors.New("failed to reconcile ConfigMap by update"))
+	// Call the reconcileChildResourceWithUpdate function
+	if err := r.reconcileChildResourceWithUpdateCurrent(ctx); err != nil {
+		errors.Join(err, errors.New("failed to reconcile child resource by update"))
 		return ctrl.Result{}, err
 	}
-	// Call the reconcileConfigMapWithPatch function
-	if err := r.reconcileConfigMapWithPatch(ctx); err != nil {
-		errors.Join(err, errors.New("failed to reconcile ConfigMap by patch"))
+	// Call the reconcileChildResourceWithUpdate function
+	if err := r.reconcileChildResourceWithReplace(ctx); err != nil {
+		errors.Join(err, errors.New("failed to reconcile child resource by update"))
+		return ctrl.Result{}, err
+	}
+	// Call the reconcileChildResourceWithPatch function
+	if err := r.reconcileChildResourceWithPatchCurrent(ctx); err != nil {
+		errors.Join(err, errors.New("failed to reconcile child resource by patch"))
+		return ctrl.Result{}, err
+	}
+	// Call the reconcileChildResource function
+	if err := r.reconcileChildResourceSuggestion(ctx); err != nil {
+		errors.Join(err, errors.New("failed to reconcile child resource by patch"))
 		return ctrl.Result{}, err
 	}
 
@@ -85,31 +128,35 @@ func (r *MyResourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// reconcileConfigMapSSA contains SSA logic for ConfigMap
-func (r *MyResourceReconciler) reconcileConfigMapSSA(ctx context.Context) error {
-	name := "example-ssa-resource"
-	desired := getMyChildResource(name)
+// reconcileChildResourceSSA contains SSA logic for child resource
+func (r *MyResourceReconciler) reconcileChildResourceSSA(ctx context.Context) error {
+	name := "example-resource-ssa"
 
-	if err := r.Client.Get(
-		ctx, client.ObjectKey{Namespace: desired.GetNamespace(), Name: desired.GetName()}, desired,
-	); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return err
-		}
-		r.Client.Create(ctx, desired)
+	if err := CreateChildResource(ctx, r.Client, name); err != nil {
+		return err
 	}
 
-	if desired.Labels["test-mode"] == "origin" {
-		desired.SetLabels(LabelsModified)
-		desired.Spec = SpecModified
-		desired.Status.State = "done"
-	} else {
-		desired.SetLabels(LabelsOrigin)
-		desired.Spec = SpecOrigin
+	desired := getMyChildResource(name)
+	current := getMyChildResource(name)
+	if err := r.Client.Get(
+		ctx, client.ObjectKeyFromObject(current), current,
+	); err != nil {
+		return err
+	}
+
+	if current.Labels["skip-change"] != "yes" {
+		if current.Labels["test-mode"] == "origin" {
+			desired.SetLabels(LabelsModified)
+			desired.Spec = SpecModified
+			desired.Status.State = "done"
+		} else {
+			desired.SetLabels(LabelsOrigin)
+			desired.Spec = SpecOrigin
+		}
 	}
 	patchOpts := []client.PatchOption{
 		client.ForceOwnership,
-		client.FieldOwner("my-ssa-controller"),
+		client.FieldOwner("my-ssa-controller-1"),
 	}
 
 	desired.SetGroupVersionKind(samplev1.GroupVersion.WithKind("MyChildResource"))
@@ -117,16 +164,18 @@ func (r *MyResourceReconciler) reconcileConfigMapSSA(ctx context.Context) error 
 	return r.Client.Patch(ctx, desired, client.Apply, patchOpts...)
 }
 
-func (r *MyResourceReconciler) reconcileConfigMapWithUpdate(ctx context.Context) error {
-	name := "example-update-resource"
+func (r *MyResourceReconciler) reconcileChildResourceWithUpdateCurrent(ctx context.Context) error {
+	name := "example-resource-update-current"
+
+	if err := CreateChildResource(ctx, r.Client, name); err != nil {
+		return err
+	}
 	desired := getMyChildResource(name)
 
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, desired, func() error {
 		target := desired.DeepCopy()
 
-		if strintToInt(desired.Labels["counter"]) < 0 {
-			target.Labels["counter"] = fmt.Sprint(strintToInt(desired.Labels["counter"]) + 1)
-		} else {
+		if desired.Labels["skip-change"] != "yes" {
 			if desired.Labels["test-mode"] == "origin" {
 				target.SetLabels(LabelsModified)
 				target.Spec = SpecModified
@@ -154,16 +203,43 @@ func (r *MyResourceReconciler) reconcileConfigMapWithUpdate(ctx context.Context)
 	return err
 }
 
-func (r *MyResourceReconciler) reconcileConfigMapWithPatch(ctx context.Context) error {
-	name := "example-patch-resource"
+func (r *MyResourceReconciler) reconcileChildResourceWithReplace(ctx context.Context) error {
+	name := "example-resource-update-replace"
+
+	if err := CreateChildResource(ctx, r.Client, name); err != nil {
+		return err
+	}
+	desired := getMyChildResource(name)
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, desired, func() error {
+
+		if desired.Labels["skip-change"] != "yes" {
+			if desired.Labels["test-mode"] == "origin" {
+				desired.SetLabels(LabelsModified)
+				desired.Spec = SpecModified
+			} else {
+				desired.SetLabels(LabelsOrigin)
+				desired.Spec = SpecOrigin
+			}
+		}
+		return nil
+	})
+
+	return err
+}
+
+func (r *MyResourceReconciler) reconcileChildResourceWithPatchCurrent(ctx context.Context) error {
+	name := "example-resource-patch-current"
+
+	if err := CreateChildResource(ctx, r.Client, name); err != nil {
+		return err
+	}
 	desired := getMyChildResource(name)
 
 	_, err := controllerutil.CreateOrPatch(ctx, r.Client, desired, func() error {
 		target := desired.DeepCopy()
 
-		if strintToInt(desired.Labels["counter"]) < 0 {
-			target.Labels["counter"] = fmt.Sprint(strintToInt(desired.Labels["counter"]) + 1)
-		} else {
+		if desired.Labels["skip-change"] != "yes" {
 			if desired.Labels["test-mode"] == "origin" {
 				target.SetLabels(LabelsModified)
 				target.Spec = SpecModified
@@ -191,46 +267,153 @@ func (r *MyResourceReconciler) reconcileConfigMapWithPatch(ctx context.Context) 
 	return err
 }
 
-var (
-	LabelsOrigin = map[string]string{
-		"test-mode": "origin",
-		"counter":   "0",
-		"imOrigin":  "yes",
+func (r *MyResourceReconciler) reconcileChildResourceSuggestion(ctx context.Context) error {
+	name := "example-resource-patch-suggested"
+
+	if err := CreateChildResource(ctx, r.Client, name); err != nil {
+		return err
 	}
-	LabelsModified = map[string]string{
-		"test-mode": "modified",
-		"counter":   "0",
+	//
+	// desired := getMyChildResource(name)
+
+	// _, err := controllerutil.CreateOrPatch(ctx, r.Client, desired, func() error {
+	// 	state := getMyChildResource(name)
+
+	// 	if desired.Labels["skip-change"] != "yes" {
+	// 		if desired.Labels["test-mode"] == "origin" {
+	// 			desired.SetLabels(LabelsModified)
+	// 			desired.Spec = SpecModified
+
+	// 			state.SetLabels(LabelsModified)
+	// 			state.Spec = SpecModified
+	// 		} else {
+	// 			desired.SetLabels(LabelsOrigin)
+	// 			desired.Spec = SpecOrigin
+	// 			state.SetLabels(LabelsOrigin)
+	// 			state.Spec = SpecOrigin
+	// 		}
+	// 	}
+
+	// 	currentAppliedState := desired.Annotations[AnnotationKey]
+	// 	desiredState, err := ToString(state)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	// 	if currentAppliedState == desiredState {
+	// 		fmt.Println("Nothing to update")
+	// 		return nil
+	// 	}
+
+	// 	desired.Annotations[AnnotationKey] = desiredState
+	// 	return nil
+	// })
+	// return err
+
+	if err := CreateChildResource(ctx, r.Client, name); err != nil {
+		return err
+	}
+	// request current
+	current := getMyChildResource(name)
+	if err := r.Client.Get(
+		ctx, client.ObjectKeyFromObject(current), current,
+	); err != nil {
+		return err
 	}
 
-	SpecOrigin = samplev1.MyChildResourceSpec{
-		Foo: "foo",
-		FooMap: map[string]string{
-			"key1": "value1",
-			"key2": "value1-2",
-		},
-		FooList: []string{"1", "2", "3"},
+	// form desired
+	desired := getMyChildResource(name)
+	if current.Labels["skip-change"] != "yes" {
+		if current.Labels["test-mode"] == "origin" {
+			desired.SetLabels(LabelsModified)
+			desired.Spec = SpecModified
+		} else {
+			desired.SetLabels(LabelsOrigin)
+			desired.Spec = SpecOrigin
+		}
 	}
-	SpecModified = samplev1.MyChildResourceSpec{
-		Foo: "foo",
-		FooMap: map[string]string{
-			"key1": "value1",
-		},
-		FooList: []string{"1", "2"},
-	}
-)
 
-func strintToInt(s string) int {
-	out, _ := strconv.Atoi(s)
-	return out
+	desiredState, err := ObjectToState(desired)
+	if err != nil {
+		return err
+	}
+	desired.Annotations[AnnotationKey] = desiredState
+
+	// form patch
+	currentState := current.Annotations[AnnotationKey]
+
+	if desiredState == currentState {
+		fmt.Println("Nothing to update")
+		return nil
+	}
+
+	currentDesired := &samplev1.MyChildResource{}
+	if err := StateToObject(currentState, currentDesired); err != nil {
+		return err
+	}
+
+	patch := client.MergeFrom(currentDesired)
+	patchBytes, err := patch.Data(desired)
+	if err != nil {
+		return err
+	}
+
+	//patch
+	return r.Client.Patch(ctx, current, client.RawPatch(types.MergePatchType, patchBytes))
+}
+
+func CreateChildResource(ctx context.Context, c client.Client, name string) error {
+	resource := getMyChildResource(name)
+
+	if err := c.Get(
+		ctx, client.ObjectKeyFromObject(resource), resource,
+	); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return err
+		}
+		resource.Labels = map[string]string{
+			"this-is-init-label": "yes",
+		}
+		resource.Annotations = map[string]string{
+			"inint-annotation": "yes",
+		}
+		c.Create(ctx, resource)
+	}
+	return nil
 }
 
 func getMyChildResource(name string) *samplev1.MyChildResource {
 	return &samplev1.MyChildResource{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "default",
-			Labels:    LabelsOrigin,
+			Name:        name,
+			Namespace:   "default",
+			Annotations: map[string]string{},
+			Labels:      LabelsOrigin,
 		},
 	}
 
+}
+
+func ObjectToState(obj client.Object) (string, error) {
+	objStr, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return "", err
+	}
+
+	delete(objStr, "status")
+	json, err := json.Marshal(objStr)
+	if err != nil {
+		return "", err
+	}
+	return string(json), err
+}
+
+func StateToObject(s string, obj client.Object) error {
+	if s == "" {
+		return nil
+	}
+	if err := json.Unmarshal([]byte(s), obj); err != nil {
+		return err
+	}
+	return nil
 }

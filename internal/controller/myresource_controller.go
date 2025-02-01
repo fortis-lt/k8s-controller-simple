@@ -156,7 +156,7 @@ func (r *MyResourceReconciler) reconcileChildResourceSSA(ctx context.Context) er
 			desired.Spec = SpecOrigin
 		}
 	}
-	return r.Client.Update(ctx, desired)
+	return r.Client.Update(ctx, desired, &client.UpdateOptions{FieldManager: "ssa-manager"})
 }
 
 func (r *MyResourceReconciler) reconcileChildResourceWithUpdateCurrent(ctx context.Context) error {

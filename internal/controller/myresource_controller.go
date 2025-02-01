@@ -136,13 +136,15 @@ func (r *MyResourceReconciler) reconcileChildResourceSSA(ctx context.Context) er
 		return err
 	}
 
-	desired := getMyChildResource(name)
 	current := getMyChildResource(name)
 	if err := r.Client.Get(
 		ctx, client.ObjectKeyFromObject(current), current,
 	); err != nil {
 		return err
 	}
+
+	desired := getMyChildResource(name)
+	desired.SetGroupVersionKind(samplev1.GroupVersion.WithKind("MyChildResource"))
 
 	if current.Labels["skip-change"] != "yes" {
 		if current.Labels["test-mode"] == "origin" {
@@ -154,14 +156,7 @@ func (r *MyResourceReconciler) reconcileChildResourceSSA(ctx context.Context) er
 			desired.Spec = SpecOrigin
 		}
 	}
-	patchOpts := []client.PatchOption{
-		client.ForceOwnership,
-		client.FieldOwner("my-ssa-controller-1"),
-	}
-
-	desired.SetGroupVersionKind(samplev1.GroupVersion.WithKind("MyChildResource"))
-	desired.ManagedFields = nil
-	return r.Client.Patch(ctx, desired, client.Apply, patchOpts...)
+	return r.Client.Update(ctx, desired)
 }
 
 func (r *MyResourceReconciler) reconcileChildResourceWithUpdateCurrent(ctx context.Context) error {

@@ -318,6 +318,7 @@ func (r *MyResourceReconciler) reconcileChildResourceSuggestion(ctx context.Cont
 	}
 	desired.SetGroupVersionKind(gvk)
 
+	// screen the bug with creationTimestamp https://github.com/kubernetes/kubernetes/issues/116861
 	unstr, err := runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
 	if err != nil {
 		return err

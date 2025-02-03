@@ -29,9 +29,12 @@ type MyChildResourceSpec struct {
 	// Important: Run "make" to regenerate code after modifying this file
 
 	// Foo is an example field of MyChildResource. Edit mychildresource_types.go to remove/update
-	Foo     string            `json:"foo,omitempty"`
+	Foo string `json:"foo,omitempty"`
+	// +kubebuilder:default={}
 	FooMap  map[string]string `json:"fooMap,omitempty"`
 	FooList []string          `json:"fooList,omitempty"`
+	// +kubebuilder:default="ho-ho-ho"
+	FooValueDefault string `json:"fooValueDefault,omitempty"`
 }
 
 // MyChildResourceStatus defines the observed state of MyChildResource.

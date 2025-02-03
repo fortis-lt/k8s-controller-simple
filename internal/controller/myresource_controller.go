@@ -20,23 +20,30 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"helm.sh/helm/v3/pkg/chartutil"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	samplev1 "k8s-controller.ad/api/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 var (
+	AnnotationOrigin = map[string]string{
+		"test-mode": "origin",
+	}
+	AnnotationModified = map[string]string{
+		"test-mode": "modified",
+	}
+
 	LabelsOrigin = map[string]string{
 		"test-mode": "origin",
 		"counter":   "0",
@@ -65,6 +72,7 @@ var (
 )
 
 const (
+	ManagerName   = "ssa-manager"
 	AnnotationKey = "manifest_applied"
 )
 
@@ -91,26 +99,26 @@ func (r *MyResourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Reconciling MyResource", "namespace", req.Namespace, "name", req.Name)
 
-	// Call the reconcileChildResourceSSA function
-	if err := r.reconcileChildResourceSSA(ctx); err != nil {
-		errors.Join(err, errors.New("failed to reconcile child resource by SSA"))
-		return ctrl.Result{}, err
-	}
-	// Call the reconcileChildResourceWithUpdate function
-	if err := r.reconcileChildResourceWithUpdateCurrent(ctx); err != nil {
-		errors.Join(err, errors.New("failed to reconcile child resource by update"))
-		return ctrl.Result{}, err
-	}
-	// Call the reconcileChildResourceWithUpdate function
-	if err := r.reconcileChildResourceWithReplace(ctx); err != nil {
-		errors.Join(err, errors.New("failed to reconcile child resource by update"))
-		return ctrl.Result{}, err
-	}
-	// Call the reconcileChildResourceWithPatch function
-	if err := r.reconcileChildResourceWithPatchCurrent(ctx); err != nil {
-		errors.Join(err, errors.New("failed to reconcile child resource by patch"))
-		return ctrl.Result{}, err
-	}
+	// // Call the reconcileChildResourceSSA function
+	// if err := r.reconcileChildResourceSSA(ctx); err != nil {
+	// 	errors.Join(err, errors.New("failed to reconcile child resource by SSA"))
+	// 	return ctrl.Result{}, err
+	// }
+	// // Call the reconcileChildResourceWithUpdate function
+	// if err := r.reconcileChildResourceWithUpdateCurrent(ctx); err != nil {
+	// 	errors.Join(err, errors.New("failed to reconcile child resource by update"))
+	// 	return ctrl.Result{}, err
+	// }
+	// // Call the reconcileChildResourceWithUpdate function
+	// if err := r.reconcileChildResourceWithReplace(ctx); err != nil {
+	// 	errors.Join(err, errors.New("failed to reconcile child resource by update"))
+	// 	return ctrl.Result{}, err
+	// }
+	// // Call the reconcileChildResourceWithPatch function
+	// if err := r.reconcileChildResourceWithPatchCurrent(ctx); err != nil {
+	// 	errors.Join(err, errors.New("failed to reconcile child resource by patch"))
+	// 	return ctrl.Result{}, err
+	// }
 	// Call the reconcileChildResource function
 	if err := r.reconcileChildResourceSuggestion(ctx); err != nil {
 		errors.Join(err, errors.New("failed to reconcile child resource by patch"))
@@ -156,7 +164,7 @@ func (r *MyResourceReconciler) reconcileChildResourceSSA(ctx context.Context) er
 	}
 	patchOpts := []client.PatchOption{
 		client.ForceOwnership,
-		client.FieldOwner("my-ssa-controller-1"),
+		client.FieldOwner(ManagerName),
 	}
 
 	desired.SetGroupVersionKind(samplev1.GroupVersion.WithKind("MyChildResource"))
@@ -268,98 +276,72 @@ func (r *MyResourceReconciler) reconcileChildResourceWithPatchCurrent(ctx contex
 }
 
 func (r *MyResourceReconciler) reconcileChildResourceSuggestion(ctx context.Context) error {
-	name := "example-resource-patch-suggested"
+	name := "example-resource-suggested"
 
-	if err := CreateChildResource(ctx, r.Client, name); err != nil {
-		return err
-	}
-	//
-	// desired := getMyChildResource(name)
-
-	// _, err := controllerutil.CreateOrPatch(ctx, r.Client, desired, func() error {
-	// 	state := getMyChildResource(name)
-
-	// 	if desired.Labels["skip-change"] != "yes" {
-	// 		if desired.Labels["test-mode"] == "origin" {
-	// 			desired.SetLabels(LabelsModified)
-	// 			desired.Spec = SpecModified
-
-	// 			state.SetLabels(LabelsModified)
-	// 			state.Spec = SpecModified
-	// 		} else {
-	// 			desired.SetLabels(LabelsOrigin)
-	// 			desired.Spec = SpecOrigin
-	// 			state.SetLabels(LabelsOrigin)
-	// 			state.Spec = SpecOrigin
-	// 		}
-	// 	}
-
-	// 	currentAppliedState := desired.Annotations[AnnotationKey]
-	// 	desiredState, err := ToString(state)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-
-	// 	if currentAppliedState == desiredState {
-	// 		fmt.Println("Nothing to update")
-	// 		return nil
-	// 	}
-
-	// 	desired.Annotations[AnnotationKey] = desiredState
-	// 	return nil
-	// })
-	// return err
-
-	if err := CreateChildResource(ctx, r.Client, name); err != nil {
-		return err
-	}
 	// request current
 	current := getMyChildResource(name)
 	if err := r.Client.Get(
 		ctx, client.ObjectKeyFromObject(current), current,
 	); err != nil {
-		return err
-	}
-
-	// form desired
-	desired := getMyChildResource(name)
-	if current.Labels["skip-change"] != "yes" {
-		if current.Labels["test-mode"] == "origin" {
-			desired.SetLabels(LabelsModified)
-			desired.Spec = SpecModified
-		} else {
-			desired.SetLabels(LabelsOrigin)
-			desired.Spec = SpecOrigin
+		if !apierrors.IsNotFound(err) {
+			return err
 		}
-	}
 
-	desiredState, err := ObjectToState(desired)
-	if err != nil {
-		return err
-	}
-	desired.Annotations[AnnotationKey] = desiredState
-
-	// form patch
-	currentState := current.Annotations[AnnotationKey]
-
-	if desiredState == currentState {
-		fmt.Println("Nothing to update")
+		if err := CreateChildResource(ctx, r.Client, name); err != nil {
+			return err
+		}
 		return nil
+
 	}
 
-	currentDesired := &samplev1.MyChildResource{}
-	if err := StateToObject(currentState, currentDesired); err != nil {
+	desired := getMyChildResource(name)
+	// if current.Labels["skip-change"] != "yes" {
+	// 	if current.Labels["test-mode"] == "origin" {
+	// 		desired.SetAnnotations(AnnotationModified)
+	// 		desired.SetLabels(LabelsModified)
+	// 		desired.Spec = SpecModified
+	// 	} else {
+	// 		desired.SetAnnotations(AnnotationOrigin)
+	// 		desired.SetLabels(LabelsOrigin)
+	// 		desired.Spec = SpecOrigin
+	// 	}
+	// }
+
+	patchOpts := []client.PatchOption{
+		client.ForceOwnership,
+		client.FieldOwner(ManagerName),
+	}
+
+	gvk, err := r.getGvk(desired)
+	if err != nil {
 		return err
 	}
+	desired.SetGroupVersionKind(gvk)
 
-	patch := client.MergeFrom(currentDesired)
-	patchBytes, err := patch.Data(desired)
+	unstr, err := runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
 	if err != nil {
 		return err
 	}
 
-	//patch
-	return r.Client.Patch(ctx, current, client.RawPatch(types.MergePatchType, patchBytes))
+	meta := unstr["metadata"].(map[string]interface{})
+	delete(meta, "creationTimestamp")
+	delete(unstr, "status")
+	unstr["metadata"] = meta
+
+	obj := &unstructured.Unstructured{
+		Object: unstr,
+	}
+
+	return r.Client.Patch(ctx, obj, client.Apply, patchOpts...)
+}
+
+func (r *MyResourceReconciler) getGvk(obj client.Object) (schema.GroupVersionKind, error) {
+	gvk, _, err := r.Client.Scheme().ObjectKinds(obj)
+	if err != nil {
+		return schema.GroupVersionKind{}, err
+	}
+	return gvk[0], nil
+
 }
 
 func CreateChildResource(ctx context.Context, c client.Client, name string) error {
@@ -371,11 +353,11 @@ func CreateChildResource(ctx context.Context, c client.Client, name string) erro
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
-		resource.Labels = map[string]string{
-			"this-is-init-label": "yes",
-		}
 		resource.Annotations = map[string]string{
-			"inint-annotation": "yes",
+			"init-annotation": "yes",
+		}
+		resource.Labels = map[string]string{
+			"init-label": "yes",
 		}
 		c.Create(ctx, resource)
 	}
